@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<h3>Register</h3>
+<form method="post">
+  <div class="field">
+    <input name="username" placeholder="Username" value="{{ values.username or '' }}" class="{% if errors.username %}input-error{% endif %}" required>
+    {% if errors.username %}<p class="error-text">{{ errors.username }}</p>{% endif %}
+  </div>
+  <div class="field">
+    <input name="email" type="email" placeholder="Email" value="{{ values.email or '' }}" class="{% if errors.email %}input-error{% endif %}" required>
+    {% if errors.email %}<p class="error-text">{{ errors.email }}</p>{% endif %}
+  </div>
+  <div class="field">
+    <input name="password" type="password" placeholder="Password" class="{% if errors.password %}input-error{% endif %}" required>
+    {% if errors.password %}<p class="error-text">{{ errors.password }}</p>{% endif %}
+  </div>
+  <button type="submit">Register</button>
+</form>
+{% endblock %}

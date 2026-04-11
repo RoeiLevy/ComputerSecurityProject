@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<h3>System Screen - Add New Customer</h3>
+<form method="post">
+  <div class="field">
+    <input name="first_name" placeholder="First name" value="{{ values.first_name or '' }}" class="{% if errors.first_name %}input-error{% endif %}" required>
+    {% if errors.first_name %}<p class="error-text">{{ errors.first_name }}</p>{% endif %}
+  </div>
+  <div class="field">
+    <input name="last_name" placeholder="Last name" value="{{ values.last_name or '' }}" class="{% if errors.last_name %}input-error{% endif %}" required>
+    {% if errors.last_name %}<p class="error-text">{{ errors.last_name }}</p>{% endif %}
+  </div>
+  <div class="field">
+    <input name="id_number" placeholder="ID number" value="{{ values.id_number or '' }}" class="{% if errors.id_number %}input-error{% endif %}" required>
+    {% if errors.id_number %}<p class="error-text">{{ errors.id_number }}</p>{% endif %}
+  </div>
+  <button type="submit">Add customer</button>
+</form>
+
+{% if new_customer_name %}
+  <p>New customer added: <strong>{{ new_customer_name }}</strong></p>
+{% endif %}
+{% endblock %}

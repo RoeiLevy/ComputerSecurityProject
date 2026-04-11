@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Communication_LTD</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+  <style>
+    body { max-width: 760px; margin-top: 24px; }
+    nav { margin-bottom: 18px; }
+    form { margin-top: 10px; }
+    input { width: 100%; }
+    .flash-list { padding-left: 20px; }
+    .field { margin-bottom: 12px; }
+    .input-error { border: 1px solid #d33 !important; }
+    .error-text { color: #d33; font-size: 0.9rem; margin: 4px 0 0; }
+  </style>
+</head>
+<body>
+  <h2>Communication_LTD</h2>
+  <nav>
+    <a href="/register">Register</a> |
+    <a href="/login">Login</a> |
+    <a href="/change-password">Change Password</a> |
+    <a href="/forgot-password">Forgot Password</a> |
+    <a href="/system">System</a> |
+    <a href="/logout">Logout</a>
+  </nav>
+  {% with messages = get_flashed_messages() %}
+    {% if messages %}
+      <ul class="flash-list">
+        {% for message in messages %}
+          <li>{{ message }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</body>
+</html>
