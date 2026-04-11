@@ -18,4 +18,3 @@ Use a free hosted SQL database (e.g. **Neon PostgreSQL**). Copy the connection s
 ## Local secrets
 
 Do not commit `.env`. The repo `.gitignore` ignores `.venv`, `.env`, and `__pycache__`.
-test
