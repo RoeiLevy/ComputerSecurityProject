@@ -14,6 +14,7 @@
     <input name="password" type="password" placeholder="Password" class="{% if errors.password %}input-error{% endif %}" required>
     {% if errors.password %}<p class="error-text">{{ errors.password }}</p>{% endif %}
   </div>
+  {% include "_password_rules.html" %}
   <button type="submit">Register</button>
 </form>
 {% endblock %}
