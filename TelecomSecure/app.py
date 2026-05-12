@@ -4,11 +4,13 @@ import json
 import os
 import secrets
 import smtplib
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 
 from dotenv import load_dotenv
 from flask import Flask, flash, redirect, render_template, request, session, url_for
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import text
 
 load_dotenv()
 
@@ -34,6 +36,16 @@ class User(db.Model):
     salt = db.Column(db.String(64), nullable=False)
     password_hmac = db.Column(db.String(128), nullable=False)
     reset_token_sha1 = db.Column(db.String(40), nullable=True)
+    failed_attempts = db.Column(db.Integer, nullable=False, default=0)
+    locked_until = db.Column(db.DateTime(timezone=True), nullable=True)
+
+
+class PasswordHistory(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    salt = db.Column(db.String(64), nullable=False)
+    password_hmac = db.Column(db.String(128), nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
 class Customer(db.Model):
@@ -48,7 +60,25 @@ def load_policy():
         return json.load(f)
 
 
-def validate_password(password: str):
+_DICTIONARY_CACHE = {"path": None, "mtime": None, "words": frozenset()}
+
+
+def load_dictionary(path: str):
+    if not path or not os.path.exists(path):
+        return frozenset()
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        mtime = None
+    if _DICTIONARY_CACHE["path"] == path and _DICTIONARY_CACHE["mtime"] == mtime:
+        return _DICTIONARY_CACHE["words"]
+    with open(path, "r", encoding="utf-8") as f:
+        words = frozenset(line.strip().lower() for line in f if line.strip())
+    _DICTIONARY_CACHE.update({"path": path, "mtime": mtime, "words": words})
+    return words
+
+
+def validate_password(password: str, user: "User | None" = None):
     policy = load_policy()
     if len(password) < policy["min_length"]:
         return False, f"Password must be at least {policy['min_length']} chars."
@@ -60,7 +90,108 @@ def validate_password(password: str):
         return False, "Password must include a digit."
     if policy["require_special"] and not any(c in policy["special_chars"] for c in password):
         return False, "Password must include special char."
+
+    dictionary = load_dictionary(policy.get("dictionary_file", ""))
+    if dictionary:
+        lowered = password.lower()
+        if lowered in dictionary:
+            return False, "Password is too common (found in dictionary)."
+        for word in dictionary:
+            if len(word) >= 5 and word in lowered:
+                return False, f"Password contains a common word ('{word}')."
+
+    if user is not None:
+        history_size = int(policy.get("history_size", 0))
+        if history_size > 0:
+            recent = (
+                PasswordHistory.query.filter_by(user_id=user.id)
+                .order_by(PasswordHistory.created_at.desc())
+                .limit(history_size)
+                .all()
+            )
+            for entry in recent:
+                if password_to_hmac(password, entry.salt) == entry.password_hmac:
+                    return False, f"Password must not match any of the last {history_size} passwords."
     return True, "OK"
+
+
+def policy_bullets():
+    policy = load_policy()
+    rules = [f"At least {policy['min_length']} characters"]
+    if policy.get("require_uppercase"):
+        rules.append("At least one uppercase letter (A-Z)")
+    if policy.get("require_lowercase"):
+        rules.append("At least one lowercase letter (a-z)")
+    if policy.get("require_digit"):
+        rules.append("At least one digit (0-9)")
+    if policy.get("require_special"):
+        rules.append(f"At least one special character ({policy['special_chars']})")
+    if policy.get("dictionary_file"):
+        rules.append("Must not be a common/dictionary password")
+    history_size = int(policy.get("history_size", 0))
+    if history_size > 0:
+        rules.append(f"Must not match any of your last {history_size} passwords")
+    return rules
+
+
+def record_password_history(user: "User"):
+    db.session.add(PasswordHistory(user_id=user.id, salt=user.salt, password_hmac=user.password_hmac))
+    policy = load_policy()
+    history_size = int(policy.get("history_size", 0))
+    if history_size > 0:
+        keep_ids = [
+            row.id
+            for row in PasswordHistory.query.filter_by(user_id=user.id)
+            .order_by(PasswordHistory.created_at.desc())
+            .limit(history_size)
+            .all()
+        ]
+        if keep_ids:
+            PasswordHistory.query.filter(
+                PasswordHistory.user_id == user.id,
+                PasswordHistory.id.notin_(keep_ids),
+            ).delete(synchronize_session=False)
+
+
+def now_utc():
+    return datetime.now(timezone.utc)
+
+
+def is_locked(user: "User") -> bool:
+    if user.locked_until is None:
+        return False
+    locked_until = user.locked_until
+    if locked_until.tzinfo is None:
+        locked_until = locked_until.replace(tzinfo=timezone.utc)
+    return locked_until > now_utc()
+
+
+def lock_message(user: "User") -> str:
+    locked_until = user.locked_until
+    if locked_until.tzinfo is None:
+        locked_until = locked_until.replace(tzinfo=timezone.utc)
+    minutes = max(1, int((locked_until - now_utc()).total_seconds() // 60) + 1)
+    return f"Account locked. Try again in about {minutes} minute(s)."
+
+
+def register_failed_attempt(user: "User"):
+    policy = load_policy()
+    max_attempts = int(policy.get("max_login_attempts", 0))
+    lockout_minutes = int(policy.get("lockout_minutes", 15))
+    user.failed_attempts = (user.failed_attempts or 0) + 1
+    if max_attempts > 0 and user.failed_attempts >= max_attempts:
+        user.locked_until = now_utc() + timedelta(minutes=lockout_minutes)
+        user.failed_attempts = 0
+
+
+def clear_lockout(user: "User"):
+    user.failed_attempts = 0
+    user.locked_until = None
+
+
+@app.context_processor
+def inject_password_rules():
+    return {"password_rules": policy_bullets()}
 
 
 def password_to_hmac(password: str, salt: str):
@@ -124,7 +255,10 @@ def register():
 
         salt = secrets.token_hex(16)
         hashed = password_to_hmac(password, salt)
-        db.session.add(User(username=username, email=email, salt=salt, password_hmac=hashed))
+        new_user = User(username=username, email=email, salt=salt, password_hmac=hashed)
+        db.session.add(new_user)
+        db.session.flush()
+        record_password_history(new_user)
         db.session.commit()
         flash("Registration succeeded.")
         return redirect(url_for("login"))
@@ -150,9 +284,25 @@ def login():
         if not user:
             errors["username"] = "User does not exist."
             return render_template("login.html", values=values, errors=errors)
-        if password_to_hmac(password, user.salt) != user.password_hmac:
-            errors["password"] = "Wrong password."
+        if is_locked(user):
+            errors["username"] = lock_message(user)
             return render_template("login.html", values=values, errors=errors)
+        if password_to_hmac(password, user.salt) != user.password_hmac:
+            register_failed_attempt(user)
+            db.session.commit()
+            if is_locked(user):
+                errors["username"] = lock_message(user)
+            else:
+                policy = load_policy()
+                max_attempts = int(policy.get("max_login_attempts", 0))
+                remaining = max(0, max_attempts - (user.failed_attempts or 0)) if max_attempts > 0 else None
+                if remaining is not None:
+                    errors["password"] = f"Wrong password. {remaining} attempt(s) left before lockout."
+                else:
+                    errors["password"] = "Wrong password."
+            return render_template("login.html", values=values, errors=errors)
+        clear_lockout(user)
+        db.session.commit()
         session["user_id"] = user.id
         flash("Logged in successfully.")
         return redirect(url_for("system_screen"))
@@ -166,32 +316,35 @@ def change_password():
         flash("Please login first.")
         return redirect(url_for("login"))
     user = User.query.get(user_id)
+    reset_flow = bool(session.get("password_reset_pending"))
     if request.method == "POST":
-        old_password = request.form["old_password"]
+        old_password = "" if reset_flow else request.form.get("old_password", "")
         new_password = request.form["new_password"]
-        values = {}
         errors = {}
 
-        if not old_password:
+        if not reset_flow and not old_password:
             errors["old_password"] = "Current password is required."
         if not new_password:
             errors["new_password"] = "New password is required."
         if errors:
-            return render_template("change_password.html", values=values, errors=errors)
+            return render_template("change_password.html", reset_flow=reset_flow, errors=errors)
 
-        if password_to_hmac(old_password, user.salt) != user.password_hmac:
+        if not reset_flow and password_to_hmac(old_password, user.salt) != user.password_hmac:
             errors["old_password"] = "Current password is wrong."
-            return render_template("change_password.html", values=values, errors=errors)
-        valid, msg = validate_password(new_password)
+            return render_template("change_password.html", reset_flow=reset_flow, errors=errors)
+        valid, msg = validate_password(new_password, user=user)
         if not valid:
             errors["new_password"] = msg
-            return render_template("change_password.html", values=values, errors=errors)
+            return render_template("change_password.html", reset_flow=reset_flow, errors=errors)
         user.salt = secrets.token_hex(16)
         user.password_hmac = password_to_hmac(new_password, user.salt)
+        record_password_history(user)
+        clear_lockout(user)
         db.session.commit()
+        session.pop("password_reset_pending", None)
         flash("Password changed successfully.")
         return redirect(url_for("system_screen"))
-    return render_template("change_password.html", values={}, errors={})
+    return render_template("change_password.html", reset_flow=reset_flow, errors={})
 
 
 @app.route("/forgot-password", methods=["GET", "POST"])
@@ -235,9 +388,11 @@ def verify_reset():
             errors["reset_value"] = "Invalid value."
             return render_template("verify_reset.html", values=values, errors=errors)
         session["user_id"] = user.id
+        session["password_reset_pending"] = True
         user.reset_token_sha1 = None
+        clear_lockout(user)
         db.session.commit()
-        flash("Verified. You can now change password.")
+        flash("Verified. You can now set a new password.")
         return redirect(url_for("change_password"))
     return render_template("verify_reset.html", values={}, errors={})
 
@@ -287,7 +442,28 @@ def logout():
     return redirect(url_for("login"))
 
 
+def migrate_schema():
+    is_postgres = database_url.startswith("postgresql+psycopg://")
+    stmts = []
+    if is_postgres:
+        stmts = [
+            'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS failed_attempts INTEGER NOT NULL DEFAULT 0',
+            'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ',
+        ]
+    else:
+        existing_cols = {row[1] for row in db.session.execute(text("PRAGMA table_info(user)")).fetchall()}
+        if "failed_attempts" not in existing_cols:
+            stmts.append("ALTER TABLE user ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0")
+        if "locked_until" not in existing_cols:
+            stmts.append("ALTER TABLE user ADD COLUMN locked_until DATETIME")
+    for sql in stmts:
+        db.session.execute(text(sql))
+    db.session.commit()
+    db.create_all()
+
+
 if __name__ == "__main__":
     with app.app_context():
         db.create_all()
+        migrate_schema()
     app.run(debug=True)
