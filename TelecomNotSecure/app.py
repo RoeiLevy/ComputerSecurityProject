@@ -1,5 +1,15 @@
+"""
+TelecomNotSecure - VULNERABLE version (Part B)
+Intentionally insecure for educational/demonstration purposes only.
+
+Vulnerabilities present:
+  Part B.1 - Stored XSS  : system screen renders customer names without HTML escaping
+  Part B.2 - SQL Injection: register, login, and system use raw string-concatenated SQL
+
+DO NOT deploy in production.
+"""
 import hashlib
-import hmac
+import hmac as _hmac
 import json
 import os
 import secrets
@@ -10,22 +20,18 @@ from email.message import EmailMessage
 from dotenv import load_dotenv
 from flask import Flask, flash, redirect, render_template, request, session, url_for
 from flask_sqlalchemy import SQLAlchemy
+from markupsafe import Markup
 from sqlalchemy import text
 
 load_dotenv()
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "dev-secret")
-database_url = os.getenv("DATABASE_URL", "sqlite:///telecom_secure.db")
+database_url = os.getenv("DATABASE_URL", "sqlite:///telecom_not_secure.db")
 if database_url.startswith("postgresql://"):
     database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
 app.config["SQLALCHEMY_DATABASE_URI"] = database_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-if database_url.startswith("postgresql+psycopg://"):
-    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
-        "pool_pre_ping": True,
-        "pool_recycle": 180,
-    }
 db = SQLAlchemy(app)
 
 
@@ -50,17 +56,21 @@ class PasswordHistory(db.Model):
 
 class Customer(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    first_name = db.Column(db.String(80), nullable=False)
-    last_name = db.Column(db.String(80), nullable=False)
-    id_number = db.Column(db.String(20), unique=True, nullable=False)
+    first_name = db.Column(db.String(500), nullable=False)
+    last_name = db.Column(db.String(500), nullable=False)
+    id_number = db.Column(db.String(100), nullable=False)
 
+
+# ---------------------------------------------------------------------------
+# Password policy helpers (same as secure version – Part A requirements)
+# ---------------------------------------------------------------------------
 
 def load_policy():
     with open("password_policy.json", "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-_DICTIONARY_CACHE = {"path": None, "mtime": None, "words": frozenset()}
+_DICT_CACHE = {"path": None, "mtime": None, "words": frozenset()}
 
 
 def load_dictionary(path: str):
@@ -70,15 +80,15 @@ def load_dictionary(path: str):
         mtime = os.path.getmtime(path)
     except OSError:
         mtime = None
-    if _DICTIONARY_CACHE["path"] == path and _DICTIONARY_CACHE["mtime"] == mtime:
-        return _DICTIONARY_CACHE["words"]
+    if _DICT_CACHE["path"] == path and _DICT_CACHE["mtime"] == mtime:
+        return _DICT_CACHE["words"]
     with open(path, "r", encoding="utf-8") as f:
         words = frozenset(line.strip().lower() for line in f if line.strip())
-    _DICTIONARY_CACHE.update({"path": path, "mtime": mtime, "words": words})
+    _DICT_CACHE.update({"path": path, "mtime": mtime, "words": words})
     return words
 
 
-def validate_password(password: str, user: "User | None" = None):
+def validate_password(password: str, user=None):
     policy = load_policy()
     if len(password) < policy["min_length"]:
         return False, f"Password must be at least {policy['min_length']} chars."
@@ -90,7 +100,6 @@ def validate_password(password: str, user: "User | None" = None):
         return False, "Password must include a digit."
     if policy["require_special"] and not any(c in policy["special_chars"] for c in password):
         return False, "Password must include special char."
-
     dictionary = load_dictionary(policy.get("dictionary_file", ""))
     if dictionary:
         lowered = password.lower()
@@ -99,7 +108,6 @@ def validate_password(password: str, user: "User | None" = None):
         for word in dictionary:
             if len(word) >= 5 and word in lowered:
                 return False, f"Password contains a common word ('{word}')."
-
     if user is not None:
         history_size = int(policy.get("history_size", 0))
         if history_size > 0:
@@ -134,7 +142,7 @@ def policy_bullets():
     return rules
 
 
-def record_password_history(user: "User"):
+def record_password_history(user):
     db.session.add(PasswordHistory(user_id=user.id, salt=user.salt, password_hmac=user.password_hmac))
     policy = load_policy()
     history_size = int(policy.get("history_size", 0))
@@ -157,7 +165,7 @@ def now_utc():
     return datetime.now(timezone.utc)
 
 
-def is_locked(user: "User") -> bool:
+def is_locked(user) -> bool:
     if user.locked_until is None:
         return False
     locked_until = user.locked_until
@@ -166,7 +174,7 @@ def is_locked(user: "User") -> bool:
     return locked_until > now_utc()
 
 
-def lock_message(user: "User") -> str:
+def lock_message(user) -> str:
     locked_until = user.locked_until
     if locked_until.tzinfo is None:
         locked_until = locked_until.replace(tzinfo=timezone.utc)
@@ -174,7 +182,7 @@ def lock_message(user: "User") -> str:
     return f"Account locked. Try again in about {minutes} minute(s)."
 
 
-def register_failed_attempt(user: "User"):
+def register_failed_attempt(user):
     policy = load_policy()
     max_attempts = int(policy.get("max_login_attempts", 0))
     lockout_minutes = int(policy.get("lockout_minutes", 15))
@@ -184,7 +192,7 @@ def register_failed_attempt(user: "User"):
         user.failed_attempts = 0
 
 
-def clear_lockout(user: "User"):
+def clear_lockout(user):
     user.failed_attempts = 0
     user.locked_until = None
 
@@ -194,10 +202,10 @@ def inject_password_rules():
     return {"password_rules": policy_bullets()}
 
 
-def password_to_hmac(password: str, salt: str):
+def password_to_hmac(password: str, salt: str) -> str:
     key = os.getenv("HMAC_SECRET", "hmac-dev-secret").encode()
     message = (salt + password).encode()
-    return hmac.new(key, message, hashlib.sha256).hexdigest()
+    return _hmac.new(key, message, hashlib.sha256).hexdigest()
 
 
 def send_mail(to_email: str, subject: str, body: str):
@@ -206,17 +214,14 @@ def send_mail(to_email: str, subject: str, body: str):
     smtp_user = os.getenv("SMTP_USER", "")
     smtp_pass = os.getenv("SMTP_PASS", "")
     mail_from = os.getenv("MAIL_FROM", "no-reply@communication-ltd.com")
-
     if not smtp_host:
         print(f"[DEV EMAIL] To: {to_email} | Subject: {subject} | Body: {body}")
         return
-
     msg = EmailMessage()
     msg["From"] = mail_from
     msg["To"] = to_email
     msg["Subject"] = subject
     msg.set_content(body)
-
     with smtplib.SMTP(smtp_host, smtp_port) as server:
         server.starttls()
         server.login(smtp_user, smtp_pass)
@@ -228,6 +233,20 @@ def index():
     return redirect(url_for("login"))
 
 
+# ---------------------------------------------------------------------------
+# Part B.2 – SQL INJECTION: /register
+#
+# Vulnerability: username and email are concatenated directly into SQL strings.
+#
+# Attack on duplicate check:
+#   username = ' OR '1'='1' --
+#   → WHERE username = '' OR '1'='1' --' OR email = '...'
+#   → Always TRUE → system always reports "user exists", blocking all registrations.
+#
+# Attack on INSERT:
+#   username = legit'), ('evil','evil@x.com','salt','hash',0)--
+#   → Inserts a second row with attacker-controlled credentials.
+# ---------------------------------------------------------------------------
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
@@ -249,22 +268,51 @@ def register():
         if errors:
             return render_template("register.html", values=values, errors=errors)
 
-        if User.query.filter((User.username == username) | (User.email == email)).first():
+        # SQLI VULNERABLE – raw string concatenation; no parameterization
+        existing = db.session.execute(
+            text(f"SELECT id FROM user WHERE username = '{username}' OR email = '{email}'")
+        ).first()
+
+        if existing:
             errors["username"] = "User or email already exists."
             return render_template("register.html", values=values, errors=errors)
 
         salt = secrets.token_hex(16)
         hashed = password_to_hmac(password, salt)
-        new_user = User(username=username, email=email, salt=salt, password_hmac=hashed)
-        db.session.add(new_user)
-        db.session.flush()
-        record_password_history(new_user)
+
+        # SQLI VULNERABLE – INSERT with raw string concatenation
+        db.session.execute(
+            text(
+                f"INSERT INTO user (username, email, salt, password_hmac, failed_attempts) "
+                f"VALUES ('{username}', '{email}', '{salt}', '{hashed}', 0)"
+            )
+        )
         db.session.commit()
+
+        new_user = User.query.filter_by(username=username).first()
+        if new_user:
+            record_password_history(new_user)
+            db.session.commit()
+
         flash("Registration succeeded.")
         return redirect(url_for("login"))
     return render_template("register.html", values={}, errors={})
 
 
+# ---------------------------------------------------------------------------
+# Part B.2 – SQL INJECTION: /login
+#
+# Vulnerability: username is concatenated directly into the SELECT query.
+#
+# Attack (information disclosure / bypass):
+#   username = ' OR '1'='1' LIMIT 1 --
+#   → WHERE username = '' OR '1'='1' LIMIT 1 --'
+#   → Returns the first user row regardless of username input.
+#
+# Attack (data extraction via UNION):
+#   username = ' UNION SELECT id, username, email, salt, password_hmac, 0, NULL FROM user --
+#   → Extracts all user credentials through the login response.
+# ---------------------------------------------------------------------------
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -280,13 +328,23 @@ def login():
         if errors:
             return render_template("login.html", values=values, errors=errors)
 
-        user = User.query.filter_by(username=username).first()
-        if not user:
+        # SQLI VULNERABLE – raw string concatenation
+        row = db.session.execute(
+            text(
+                f"SELECT id, username, email, salt, password_hmac, failed_attempts, locked_until "
+                f"FROM user WHERE username = '{username}'"
+            )
+        ).mappings().first()
+
+        if not row:
             errors["username"] = "User does not exist."
             return render_template("login.html", values=values, errors=errors)
+
+        user = User.query.get(row["id"])
         if is_locked(user):
             errors["username"] = lock_message(user)
             return render_template("login.html", values=values, errors=errors)
+
         if password_to_hmac(password, user.salt) != user.password_hmac:
             register_failed_attempt(user)
             db.session.commit()
@@ -301,6 +359,7 @@ def login():
                 else:
                     errors["password"] = "Wrong password."
             return render_template("login.html", values=values, errors=errors)
+
         clear_lockout(user)
         db.session.commit()
         session["user_id"] = user.id
@@ -397,18 +456,41 @@ def verify_reset():
     return render_template("verify_reset.html", values={}, errors={})
 
 
+# ---------------------------------------------------------------------------
+# Part B.1 – STORED XSS + Part B.2 – SQL INJECTION: /system
+#
+# XSS vulnerability:
+#   first_name and last_name are stored as-is (no sanitization) and rendered
+#   without HTML escaping via Markup() / | safe in the template.
+#   Attack: first_name = <script>alert('XSS')</script>
+#   Effect: script executes for every user who views the customer list.
+#
+# SQLi vulnerabilities:
+#   1. Duplicate check: id_number concatenated into WHERE clause.
+#      Attack: id_number = ' OR '1'='1' --  → always finds a duplicate, blocks all adds.
+#
+#   2. INSERT: first_name / last_name / id_number concatenated into VALUES.
+#      Attack: last_name = x', '123'); DROP TABLE customer; --
+#
+#   3. Search: search term concatenated into WHERE LIKE clause.
+#      Attack: search = ' UNION SELECT id, username, email, id FROM user --
+#      Effect: dumps user credentials into the customer results table.
+# ---------------------------------------------------------------------------
 @app.route("/system", methods=["GET", "POST"])
 def system_screen():
     if not session.get("user_id"):
         flash("Please login first.")
         return redirect(url_for("login"))
+
     new_customer_name = None
     errors = {}
     values = {}
+
     if request.method == "POST":
-        first_name = request.form["first_name"].strip()
-        last_name = request.form["last_name"].strip()
-        id_number = request.form["id_number"].strip()
+        # No .strip() on name fields – preserves HTML/JS for XSS demo
+        first_name = request.form.get("first_name", "")
+        last_name = request.form.get("last_name", "")
+        id_number = request.form.get("id_number", "").strip()
         values = {"first_name": first_name, "last_name": last_name, "id_number": id_number}
 
         if not first_name:
@@ -417,29 +499,43 @@ def system_screen():
             errors["last_name"] = "Last name is required."
         if not id_number:
             errors["id_number"] = "ID number is required."
-        elif not id_number.isdigit():
-            errors["id_number"] = "ID number must contain digits only."
-        elif len(id_number) not in (8, 9):
-            errors["id_number"] = "ID number must be 8-9 digits."
-
-        if not errors and Customer.query.filter_by(id_number=id_number).first():
-            errors["id_number"] = "ID number already exists."
 
         if not errors:
-            c = Customer(first_name=first_name, last_name=last_name, id_number=id_number)
-            db.session.add(c)
-            db.session.commit()
-            new_customer_name = f"{c.first_name} {c.last_name}"
-            values = {}
+            # SQLI VULNERABLE – id_number injected into WHERE clause
+            dup = db.session.execute(
+                text(f"SELECT id FROM customer WHERE id_number = '{id_number}'")
+            ).first()
 
+            if dup:
+                errors["id_number"] = "ID number already exists."
+            else:
+                # SQLI VULNERABLE – all three fields injected into INSERT VALUES
+                # XSS  VULNERABLE – first_name / last_name stored without sanitization
+                db.session.execute(
+                    text(
+                        f"INSERT INTO customer (first_name, last_name, id_number) "
+                        f"VALUES ('{first_name}', '{last_name}', '{id_number}')"
+                    )
+                )
+                db.session.commit()
+                # Markup() marks the string as safe → Jinja2 will NOT auto-escape it (XSS)
+                new_customer_name = Markup(first_name + " " + last_name)
+
+    # Search feature – also SQLI VULNERABLE (UNION-based data extraction)
     search = request.args.get("search", "").strip()
     if search:
-        customers = Customer.query.filter(
-            (Customer.first_name.ilike(f"%{search}%")) |
-            (Customer.last_name.ilike(f"%{search}%"))
-        ).order_by(Customer.id.desc()).all()
+        # SQLI VULNERABLE – search term injected into LIKE clause
+        # Attack: ' UNION SELECT id, username, email, id FROM user --
+        customers = db.session.execute(
+            text(
+                f"SELECT id, first_name, last_name, id_number FROM customer "
+                f"WHERE first_name LIKE '%{search}%' OR last_name LIKE '%{search}%'"
+            )
+        ).mappings().all()
     else:
-        customers = Customer.query.order_by(Customer.id.desc()).all()
+        customers = db.session.execute(
+            text("SELECT id, first_name, last_name, id_number FROM customer ORDER BY id DESC")
+        ).mappings().all()
 
     return render_template(
         "system.html",
@@ -458,28 +554,7 @@ def logout():
     return redirect(url_for("login"))
 
 
-def migrate_schema():
-    is_postgres = database_url.startswith("postgresql+psycopg://")
-    stmts = []
-    if is_postgres:
-        stmts = [
-            'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS failed_attempts INTEGER NOT NULL DEFAULT 0',
-            'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ',
-        ]
-    else:
-        existing_cols = {row[1] for row in db.session.execute(text("PRAGMA table_info(user)")).fetchall()}
-        if "failed_attempts" not in existing_cols:
-            stmts.append("ALTER TABLE user ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0")
-        if "locked_until" not in existing_cols:
-            stmts.append("ALTER TABLE user ADD COLUMN locked_until DATETIME")
-    for sql in stmts:
-        db.session.execute(text(sql))
-    db.session.commit()
-    db.create_all()
-
-
 if __name__ == "__main__":
     with app.app_context():
         db.create_all()
-        migrate_schema()
     app.run(debug=True)

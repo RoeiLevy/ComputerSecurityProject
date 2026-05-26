@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{% block title %}Communication_LTD{% endblock %}</title>
+  <title>{% block title %}Communication_LTD [VULNERABLE]{% endblock %}</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -37,6 +37,17 @@
       font-size: 15px;
     }
 
+    /* ── Vuln banner ─────────────────────────────────── */
+    .vuln-banner {
+      background: #7F1D1D;
+      color: #FEE2E2;
+      text-align: center;
+      padding: 7px 16px;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      letter-spacing: .01em;
+    }
+
     /* ── Header ─────────────────────────────────────── */
     .site-header {
       background: var(--surface);
@@ -68,7 +79,7 @@
     }
     .site-logo .logo-icon {
       width: 30px; height: 30px;
-      background: var(--primary);
+      background: #991B1B;
       border-radius: 8px;
       display: flex; align-items: center; justify-content: center;
       color: #fff;
@@ -76,6 +87,7 @@
       font-weight: 800;
       letter-spacing: -0.5px;
     }
+    .site-logo .logo-text { color: #991B1B; }
     .site-nav {
       display: flex;
       align-items: center;
@@ -202,7 +214,7 @@
       font-family: inherit;
       cursor: pointer;
       text-decoration: none;
-      transition: background .15s, box-shadow .15s;
+      transition: background .15s;
       white-space: nowrap;
     }
     button[type="submit"], .btn-primary {
@@ -278,10 +290,7 @@
     }
 
     /* ── Table ───────────────────────────────────────── */
-    .table-wrapper {
-      overflow-x: auto;
-      border-radius: var(--radius);
-    }
+    .table-wrapper { overflow-x: auto; border-radius: var(--radius); }
     table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
     thead { background: var(--surface-alt); }
     th {
@@ -302,8 +311,6 @@
     }
     tr:last-child td { border-bottom: none; }
     tbody tr:hover td { background: #FAFBFF; }
-
-    /* avatar-like initials */
     .customer-cell { display: flex; align-items: center; gap: 10px; }
     .avatar {
       width: 32px; height: 32px;
@@ -329,9 +336,7 @@
     }
 
     /* ── Search bar ──────────────────────────────────── */
-    .search-row {
-      display: flex; gap: 8px; margin-bottom: 16px; align-items: center;
-    }
+    .search-row { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; }
     .search-row input { flex: 1; margin-bottom: 0; }
 
     /* ── Success banner ──────────────────────────────── */
@@ -348,18 +353,11 @@
     }
 
     /* ── Empty state ─────────────────────────────────── */
-    .empty-state {
-      text-align: center;
-      padding: 40px 24px;
-      color: var(--text-muted);
-    }
+    .empty-state { text-align: center; padding: 40px 24px; color: var(--text-muted); }
     .empty-state .empty-icon { font-size: 2rem; margin-bottom: 8px; }
     .empty-state p { font-size: 0.9rem; }
 
-    /* ── Divider ─────────────────────────────────────── */
     hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
-
-    /* ── Misc ────────────────────────────────────────── */
     a { color: var(--primary); text-decoration: none; }
     a:hover { text-decoration: underline; }
 
@@ -373,11 +371,14 @@
   </style>
 </head>
 <body>
+  <div class="vuln-banner">
+    ⚠ VULNERABLE VERSION — for educational and demonstration purposes only — DO NOT deploy in production
+  </div>
   <header class="site-header">
     <div class="header-inner">
       <a href="/" class="site-logo">
         <div class="logo-icon">CL</div>
-        Communication_LTD
+        <span class="logo-text">Communication_LTD</span>
       </a>
       <nav class="site-nav">
         <a href="/register" class="nav-link">Register</a>
